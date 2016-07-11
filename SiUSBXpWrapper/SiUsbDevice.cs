@@ -23,6 +23,7 @@ namespace SiUSBXp
         private SiUsbDevice(IntPtr handle)
         {
             _device = new SafeSiUsbHandle(handle);
+            ThreadPool.BindHandle(_device);
             _partNumber = new Lazy<PartNumber>(GetPartNumber);
             _deviceProductString = new Lazy<string>(GetDeviceProductString);
         }
@@ -346,11 +347,6 @@ namespace SiUSBXp
             uint result = 0;
             var code = SiUsbXpDll.SI_Read(NativeHandle, buffer, (uint) count, ref result, new IntPtr(intOverlapped));
             ExceptionHelper.ThrowIfError(code);
-            if (code == SiUsbXpDll.SI_SUCCESS)
-            {
-                asyncResult.NumBufferedBytes = (int) result;
-                asyncResult.CallUserCallback();
-            }
 
             return asyncResult;
         }
@@ -385,15 +381,6 @@ namespace SiUSBXp
             uint result = 0;
             var code = SiUsbXpDll.SI_Write(NativeHandle, buffer, (uint)count, ref result, new IntPtr(intOverlapped));
             ExceptionHelper.ThrowIfError(code);
-            if (code == SiUsbXpDll.SI_SUCCESS)
-            {
-                asyncResult.NumBufferedBytes = (int)result;
-                asyncResult.CallUserCallback();
-            }
-            else
-            {
-                EndWrite(asyncResult);
-            }
 
             return asyncResult;
         }

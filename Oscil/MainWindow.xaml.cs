@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO.Ports;
 using System.Linq;
 using System.Text;
@@ -44,12 +45,13 @@ namespace Oscil
                 state = device.CheckRxQueue();
                 await Task.Delay(100);
             } while (state.QueueStatus != RxQueueStatus.Ready);*/
-            var rb = new byte[512];
+            var rb = new byte[16000];
             /*var read = device.Read(rb, 0, 512);
             var b = 10;*/
-            device.Write(buffer, 0, buffer.Length);
-            var read = await device.ReadAsync(rb, 0, 16*4096);
+            await device.WriteAsync(buffer, 0, buffer.Length);
+            var read = await device.ReadAsync(rb, 0, 16000);
             device.Close();
+            Debug.WriteLine("Success");
         }
     }
 }
