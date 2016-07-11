@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
 using System.Text;
@@ -350,6 +351,7 @@ namespace SiUSBXp
                 asyncResult.NumBufferedBytes = (int) result;
                 asyncResult.CallUserCallback();
             }
+
             return asyncResult;
         }
 
@@ -373,6 +375,48 @@ namespace SiUSBXp
                 throw ExceptionHelper.CodeToException(afsar.ErrorCode);
             }
             return afsar.NumBytesRead;
+        }
+
+        public override unsafe IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
+        {
+            ThrowIfDisposed();
+            SiUsbAsyncResult asyncResult = new SiUsbAsyncResult(0, buffer, _device, callback, state, true);
+            NativeOverlapped* intOverlapped = asyncResult.OverLapped;
+            uint result = 0;
+            var code = SiUsbXpDll.SI_Write(NativeHandle, buffer, (uint)count, ref result, new IntPtr(intOverlapped));
+            ExceptionHelper.ThrowIfError(code);
+            if (code == SiUsbXpDll.SI_SUCCESS)
+            {
+                asyncResult.NumBufferedBytes = (int)result;
+                asyncResult.CallUserCallback();
+            }
+            else
+            {
+                EndWrite(asyncResult);
+            }
+
+            return asyncResult;
+        }
+
+        public override void EndWrite(IAsyncResult asyncResult)
+        {
+            SiUsbAsyncResult afsar = asyncResult as SiUsbAsyncResult;
+            if (afsar == null || !afsar.IsWrite)
+            {
+                throw new ArgumentException("Wrong AsyncResult", nameof(asyncResult));
+            }
+
+            if (1 == Interlocked.CompareExchange(ref afsar._EndXxxCalled, 1, 0))
+            {
+                throw new InvalidOperationException("EndWrite called twice");
+            }
+            afsar.Wait();
+            afsar.ReleaseNativeResource();
+
+            if (afsar.ErrorCode != 0)
+            {
+                throw ExceptionHelper.CodeToException(afsar.ErrorCode);
+            }
         }
     }
 
@@ -430,7 +474,7 @@ namespace SiUSBXp
             if (userCallback != null)
             {
                 var ioCallback = s_IOCallback;
-                if (ioCallback == null) s_IOCallback = ioCallback = AsyncFSCallback;
+                if (ioCallback == null) s_IOCallback = ioCallback = AsyncFsCallback;
                 _overlapped = overlapped.Pack(ioCallback, bytes);
             }
             else
@@ -504,33 +548,30 @@ namespace SiUSBXp
                 _isComplete = true;
 
                 Thread.MemoryBarrier();
-                if (_waitHandle != null)
-                    _waitHandle.Set();
+                _waitHandle?.Set();
             }
         }
 
         internal void ReleaseNativeResource()
         {
-            if (this._overlapped != null)
+            if (_overlapped != null)
                 Overlapped.Free(_overlapped);
         }
 
         internal void Wait()
         {
-            if (_waitHandle != null)
+            if (_waitHandle == null) return;
+            try
             {
-                try
-                {
-                    _waitHandle.WaitOne();
-                }
-                finally
-                {
-                    _waitHandle.Close();
-                }
+                _waitHandle.WaitOne();
+            }
+            finally
+            {
+                _waitHandle.Close();
             }
         }
 
-        unsafe private static void AsyncFSCallback(uint errorCode, uint numBytes, NativeOverlapped* pOverlapped)
+        private static void AsyncFsCallback(uint errorCode, uint numBytes, NativeOverlapped* pOverlapped)
         {
             Overlapped overlapped = Overlapped.Unpack(pOverlapped);
 
@@ -553,8 +594,7 @@ namespace SiUSBXp
             }
 
             AsyncCallback userCallback = asyncResult._userCallback;
-            if (userCallback != null)
-                userCallback(asyncResult);
+            userCallback?.Invoke(asyncResult);
         }
 
         internal void Cancel()
@@ -564,7 +604,6 @@ namespace SiUSBXp
 
             if (_handle.IsInvalid)
                 return;
-
         }
     }
 
