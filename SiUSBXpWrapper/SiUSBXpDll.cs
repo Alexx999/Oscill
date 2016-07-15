@@ -109,6 +109,15 @@ namespace SiUSBXp
         );
 
         [DllImport("SiUSBXp.dll", SetLastError = true)]
+        public static extern int SI_Read(
+        IntPtr cyHandle,
+        IntPtr lpBuffer,
+        uint dwBytesToRead,
+        ref uint lpdwBytesReturned,
+        IntPtr o
+        );
+
+        [DllImport("SiUSBXp.dll", SetLastError = true)]
         public static extern int SI_Write(
         IntPtr cyHandle,
         byte[] lpBuffer,
@@ -121,6 +130,15 @@ namespace SiUSBXp
         public static extern unsafe int SI_Write(
         IntPtr cyHandle,
         byte* lpBuffer,
+        uint dwBytesToWrite,
+        ref uint lpdwBytesWritten,
+        IntPtr o
+        );
+
+        [DllImport("SiUSBXp.dll", SetLastError = true)]
+        public static extern int SI_Write(
+        IntPtr cyHandle,
+        IntPtr lpBuffer,
         uint dwBytesToWrite,
         ref uint lpdwBytesWritten,
         IntPtr o

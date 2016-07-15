@@ -23,6 +23,8 @@ namespace Oscil
     /// </summary>
     public partial class MainWindow : Window
     {
+        private OscillDevice _device;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -31,27 +33,31 @@ namespace Oscil
         private async void button_Click(object sender, RoutedEventArgs e)
         {
             var res = SiUsbDevice.NumDevices;
-            var desc = SiUsbDevice.GetProductString(0, ProductProperty.Pid);
+            var desc = SiUsbDevice.GetProductString(0, ProductProperty.Description);
+            
+            _device = new OscillDevice(0);
+
+            /*
+            var res = SiUsbDevice.NumDevices;
+            var desc = SiUsbDevice.GetProductString(0, ProductProperty.Description);
             SiUsbDevice.SetTimeouts(1000, 1000);
             var device = SiUsbDevice.Open(0);
             device.SetBaudRate(9600);
             device.SetLineControl(StopBits.One, Parity.None, 8);
             device.SetFlowControl(RxPinOption.StatusInput, TxPinOption.HeldInactive, TxPinOption.HeldActive, RxPinOption.StatusInput, RxPinOption.StatusInput, false);
             var buffer = new byte[] {0x80, 0x00, 0x07, 0x10, 0x00, 0x10, 0x00};
-            //device.Write(buffer, 0, buffer.Length);
-            /*RxQueueState state;
-            do
-            {
-                state = device.CheckRxQueue();
-                await Task.Delay(100);
-            } while (state.QueueStatus != RxQueueStatus.Ready);*/
+
             var rb = new byte[16000];
-            /*var read = device.Read(rb, 0, 512);
-            var b = 10;*/
-            await device.WriteAsync(buffer, 0, buffer.Length);
-            var read = await device.ReadAsync(rb, 0, 16000);
+            device.Write(buffer, 0, buffer.Length);
+            await Task.Delay(10);
+            var read = device.Read(rb, 0, 16000);
             device.Close();
-            Debug.WriteLine("Success");
+            Debug.WriteLine("Success");*/
+        }
+
+        private void button2_Click(object sender, RoutedEventArgs e)
+        {
+            _device.SendConnect();
         }
     }
 }

@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -342,10 +343,12 @@ namespace SiUSBXp
         public override unsafe IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
         {
             ThrowIfDisposed();
-            SiUsbAsyncResult asyncResult = new SiUsbAsyncResult(0, buffer, _device, callback, state, false);
+            GCHandle pinnedArray = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            var pos = pinnedArray.AddrOfPinnedObject() + offset;
+            SiUsbAsyncResult asyncResult = new SiUsbAsyncResult(0, buffer, _device, callback, state, false, pinnedArray);
             NativeOverlapped* intOverlapped = asyncResult.OverLapped;
             uint result = 0;
-            var code = SiUsbXpDll.SI_Read(NativeHandle, buffer, (uint) count, ref result, new IntPtr(intOverlapped));
+            var code = SiUsbXpDll.SI_Read(NativeHandle, pos, (uint) count, ref result, new IntPtr(intOverlapped));
             ExceptionHelper.ThrowIfError(code);
 
             return asyncResult;
@@ -376,10 +379,12 @@ namespace SiUSBXp
         public override unsafe IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
         {
             ThrowIfDisposed();
-            SiUsbAsyncResult asyncResult = new SiUsbAsyncResult(0, buffer, _device, callback, state, true);
+            GCHandle pinnedArray = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            var pos = pinnedArray.AddrOfPinnedObject() + offset;
+            SiUsbAsyncResult asyncResult = new SiUsbAsyncResult(0, buffer, _device, callback, state, true, pinnedArray);
             NativeOverlapped* intOverlapped = asyncResult.OverLapped;
             uint result = 0;
-            var code = SiUsbXpDll.SI_Write(NativeHandle, buffer, (uint)count, ref result, new IntPtr(intOverlapped));
+            var code = SiUsbXpDll.SI_Write(NativeHandle, pos, (uint)count, ref result, new IntPtr(intOverlapped));
             ExceptionHelper.ThrowIfError(code);
 
             return asyncResult;
@@ -431,6 +436,7 @@ namespace SiUSBXp
         internal int NumBytesRead => _numBytes + NumBufferedBytes;
 
         private bool _isWrite;
+        private readonly GCHandle _pinnedArray;
         internal bool IsWrite => _isWrite;
 
         private bool _isComplete;     
@@ -439,17 +445,12 @@ namespace SiUSBXp
         private static IOCompletionCallback s_IOCallback;
 
         
-        internal SiUsbAsyncResult(
-            int numBufferedBytes,
-            byte[] bytes,
-            SafeSiUsbHandle handle,
-            AsyncCallback userCallback,
-            object userStateObject,
-            bool isWrite)
+        internal SiUsbAsyncResult(int numBufferedBytes, byte[] bytes, SafeSiUsbHandle handle, AsyncCallback userCallback, object userStateObject, bool isWrite, GCHandle pinnedArray)
         {
             _userCallback = userCallback;
             _userStateObject = userStateObject;
             _isWrite = isWrite;
+            _pinnedArray = pinnedArray;
             NumBufferedBytes = numBufferedBytes;
             _handle = handle;
 
@@ -543,6 +544,7 @@ namespace SiUSBXp
         {
             if (_overlapped != null)
                 Overlapped.Free(_overlapped);
+            _pinnedArray.Free();
         }
 
         internal void Wait()
