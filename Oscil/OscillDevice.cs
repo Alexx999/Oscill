@@ -37,7 +37,7 @@ namespace Oscil
             _device.SetLineControl(StopBits.One, Parity.None, 8);
             _device.SetFlowControl(RxPinOption.StatusInput, TxPinOption.HeldInactive, TxPinOption.HeldActive, RxPinOption.StatusInput, RxPinOption.StatusInput, false);
 
-            SendPacket(new Packet(Opcode.Connect, new byte[] {16,0,16,0}));
+            SendPacket(new ConnectPacket());
         }
 
         private void SendPacket(Packet packet)
@@ -108,15 +108,15 @@ namespace Oscil
 
         private void TryReadPacket()
         {
-            if(_position < 3) return;
+            if(_position < 1) return;
             var type = (Opcode)_buffer[0];
-            var converter = new BigEndianBitConverter();
-            var len = converter.ToUInt16(_buffer, 1);
-            if(_position < len) return;
-            var data = new byte[len - 3];
-            Buffer.BlockCopy(_buffer, 3, data, 0, data.Length);
+            var packet = PacketFactory.ReadPacket(type);
 
-            var packet = new Packet(type, data);
+            if (!packet.Read(_buffer, 1, _position))
+            {
+                return;
+            }
+
             Buffer.BlockCopy(_buffer, _position, _buffer, 0, _bufferLength - _position);
         }
 
@@ -149,7 +149,23 @@ namespace Oscil
 
         public void SendConnect()
         {
-            SendPacket(new Packet(Opcode.Connect, new byte[] { }));
+            SendPacket(new ConnectPacket());
+        }
+    }
+
+    internal static class PacketFactory
+    {
+        public static Packet ReadPacket(Opcode opcode)
+        {
+            switch (opcode)
+            {
+                case Opcode.Success:
+                {
+                    return new SuccessPacket();
+                }
+            }
+
+            throw new ArgumentException("Bad value", nameof(opcode));
         }
     }
 
@@ -176,15 +192,46 @@ namespace Oscil
         Success = 0xa0
     }
 
-    public class Packet
+    public class ConnectPacket : Packet
+    {
+        public ConnectPacket() : base(Opcode.Connect, new byte[] {16,0,16,0}) { }
+        public override bool Read(byte[] data, int index, int length)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    public class SuccessPacket : Packet
+    {
+        public SuccessPacket() : base(Opcode.Success, new byte[0]) { }
+        public override bool Read(byte[] input, int index, int length)
+        {
+            if (length < 3) return false;
+            var converter = new BigEndianBitConverter();
+            var len = converter.ToUInt16(input, index);
+            if (length < len) return false;
+            var data = new byte[len - 3];
+            Buffer.BlockCopy(input, 3, data, 0, data.Length);
+            Data = data;
+            return true;
+        }
+    }
+
+    public abstract class Packet
     {
         public Opcode Opcode;
         public byte[] Data;
 
-        public Packet(Opcode opcode, byte[] bytes)
+        public Packet(Opcode opcode, byte[] bytes) : this(opcode)
         {
-            Opcode = opcode;
             Data = bytes;
         }
+
+        public Packet(Opcode opcode)
+        {
+            Opcode = opcode;
+        }
+
+        public abstract bool Read(byte[] data, int index, int length);
     }
 }
