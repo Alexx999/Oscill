@@ -76,9 +76,9 @@ namespace Oscil
             if (_connected) return true;
             _connectingTcs = new TaskCompletionSource<bool>();
 
-            SendPacket(new ConnectPacket());
+            EnqueuePacket(new ConnectPacket());
 
-            await Task.WhenAny(Task.Delay(1000), _connectingTcs.Task).ConfigureAwait(true);
+            await Task.WhenAny(Task.Delay(1000, _cts.Token), _connectingTcs.Task).ConfigureAwait(true);
 
             _connectingTcs = null;
             return await CheckAndRetryConnectionAsync().ConfigureAwait(false);
@@ -99,7 +99,7 @@ namespace Oscil
             return await ConnectAsync().ConfigureAwait(false);
         }
 
-        private void SendPacket(Packet packet)
+        private void EnqueuePacket(Packet packet)
         {
             _sendBuffer.Post(packet);
         }
@@ -223,7 +223,7 @@ namespace Oscil
 
         public void SendConnect()
         {
-            SendPacket(new ConnectPacket());
+            EnqueuePacket(new ConnectPacket());
         }
     }
 

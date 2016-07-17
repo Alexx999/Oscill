@@ -32,10 +32,13 @@ namespace Oscil
 
         private async void button_Click(object sender, RoutedEventArgs e)
         {
-            var res = SiUsbDevice.NumDevices;
-            var desc = SiUsbDevice.GetProductString(0, ProductProperty.Description);
+            var tgtSerial = "201501082132283";
+            var devices = SiUsbDeviceProperties.GetAll();
+            var tgtDevice = devices.FirstOrDefault(d => d.SerialNumber == tgtSerial);
+            
+            if(tgtDevice == null) return;
 
-            using (_device = new OscillDevice(0))
+            using (_device = new OscillDevice(tgtDevice.Id))
             {
                 var b = await _device.ConnectAsync().ConfigureAwait(false);
             }

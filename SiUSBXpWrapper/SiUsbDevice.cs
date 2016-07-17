@@ -606,6 +606,47 @@ namespace SiUSBXp
         }
     }
 
+    public class SiUsbDeviceProperties
+    {
+        protected SiUsbDeviceProperties(uint id, string description, string linkName, string serialNumber, string vid, string pid)
+        {
+            Id = id;
+            Description = description;
+            LinkName = linkName;
+            SerialNumber = serialNumber;
+            Vid = vid;
+            Pid = pid;
+        }
+
+        public string Description { get; }
+        public string LinkName { get; }
+        public string SerialNumber { get; }
+        public string Vid { get; }
+        public string Pid { get; }
+        public uint Id { get; }
+
+        public static SiUsbDeviceProperties Get(uint deviceId)
+        {
+            var description = SiUsbDevice.GetProductString(deviceId, ProductProperty.Description);
+            var linkName = SiUsbDevice.GetProductString(deviceId, ProductProperty.LinkName);
+            var serialNumber = SiUsbDevice.GetProductString(deviceId, ProductProperty.SerialNumber);
+            var vid = SiUsbDevice.GetProductString(deviceId, ProductProperty.Vid);
+            var pid = SiUsbDevice.GetProductString(deviceId, ProductProperty.Pid);
+            return new SiUsbDeviceProperties(deviceId, description, linkName, serialNumber, vid, pid);
+        }
+
+        public static SiUsbDeviceProperties[] GetAll()
+        {
+            var count = SiUsbDevice.NumDevices;
+            var result = new SiUsbDeviceProperties[count];
+            for (uint i = 0; i < count; i++)
+            {
+                result[i] = Get(i);
+            }
+            return result;
+        }
+    }
+
     public struct Timeouts
     {
         public uint Read;
