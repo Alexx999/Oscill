@@ -16,13 +16,16 @@ namespace Oscil
         private Task _rxTask;
         private Task _txTask;
         private const int BufferLength = 4096;
-        private readonly byte[] _buffer = new byte[BufferLength];
-        private int _position;
+        private byte[] _buffer;
         private readonly BufferBlock<Packet> _sendBuffer = new BufferBlock<Packet>();
         private bool _disposed;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
-        private readonly EndianBinaryReader _reader;
-        private readonly MemoryStream _ms;
+        private EndianBinaryReader _reader;
+        private MemoryStream _ms;
+        private bool _connecting;
+        private bool _connected;
+        private int _connectRetryCount;
+        private int _maxConnectRetryCount = 1;
 
         static OscillDevice()
         {
@@ -32,21 +35,56 @@ namespace Oscil
         public OscillDevice(SiUsbDevice device)
         {
             _device = device;
-            _ms = new MemoryStream(_buffer);
-            _ms.SetLength(0);
-            _reader = new EndianBinaryReader(EndianBitConverter.Big, _ms);
+            CreateBuffers();
 
             StartLoops();
             Connect();
         }
 
+        private void CreateBuffers()
+        {
+            _buffer = new byte[BufferLength];
+            _ms = new MemoryStream(_buffer);
+            _ms.SetLength(0);
+            _reader = new EndianBinaryReader(EndianBitConverter.Big, _ms);
+        }
+
+        private void PacketReceived(Packet packet)
+        {
+            if (_connecting && packet is SuccessPacket)
+            {
+                _connecting = false;
+                _connected = true;
+            }
+        }
+
         private void Connect()
         {
+            if (_connected) return;
+            _connecting = true;
             _device.SetBaudRate(9600);
             _device.SetLineControl(StopBits.One, Parity.None, 8);
             _device.SetFlowControl(RxPinOption.StatusInput, TxPinOption.HeldInactive, TxPinOption.HeldActive, RxPinOption.StatusInput, RxPinOption.StatusInput, false);
 
             SendPacket(new ConnectPacket());
+
+            Task.Delay(1000).ContinueWith(task => CheckAndRetryConnection());
+        }
+
+        private void CheckAndRetryConnection()
+        {
+            if(_connected) return;
+
+            _connectRetryCount++;
+
+            if (_connectRetryCount == _maxConnectRetryCount)
+            {
+                _connecting = false;
+                return;
+            }
+
+            CreateBuffers();
+            Connect();
         }
 
         private void SendPacket(Packet packet)
@@ -79,13 +117,11 @@ namespace Oscil
             }
         }
 
-        private Task WritePacketToDeviceAsync(Packet nextPacket, CancellationToken token)
+        private Task WritePacketToDeviceAsync(Packet packet, CancellationToken token)
         {
             var memoryStream = new MemoryStream();
             var writer = new EndianBinaryWriter(EndianBitConverter.Big, memoryStream);
-            writer.Write((byte)nextPacket.Opcode);
-            writer.Write((short)(nextPacket.Data.Length + 3));
-            writer.Write(nextPacket.Data, 0, nextPacket.Data.Length);
+            packet.Write(writer);
             writer.Flush();
 
             var bytes = memoryStream.ToArray();
@@ -122,10 +158,12 @@ namespace Oscil
         {
             if(_ms.Length < 1) return;
             var type = (Opcode)_reader.ReadByte();
-            var packet = PacketFactory.GetPacket(type);
+
+            Packet packet;
 
             try
             {
+                packet = PacketFactory.GetPacket(type);
                 packet.Read(_reader);
             }
             catch
@@ -136,6 +174,8 @@ namespace Oscil
             var pos = _ms.Position;
             Buffer.BlockCopy(_buffer, (int) pos, _buffer, 0, (int) (BufferLength - pos));
             _ms.SetLength(_ms.Length - _ms.Position);
+
+            PacketReceived(packet);
         }
 
         public virtual void Dispose(bool disposing)
@@ -146,6 +186,8 @@ namespace Oscil
                 _cts.Dispose();
                 _rxTask.Dispose();
                 _txTask.Dispose();
+                _ms.Dispose();
+                _reader.Dispose();
             }
             _device.Close();
             _device.Dispose();
@@ -217,6 +259,13 @@ namespace Oscil
         {
             throw new NotImplementedException();
         }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            writer.Write((byte)Opcode);
+            writer.Write((short)(Data.Length + 3));
+            writer.Write(Data, 0, Data.Length);
+        }
     }
 
     public class SuccessPacket : Packet
@@ -228,6 +277,11 @@ namespace Oscil
             var data = new byte[len];
             reader.Read(data, 0, len);
             Data = data;
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            throw new NotImplementedException();
         }
     }
 
@@ -247,5 +301,6 @@ namespace Oscil
         }
 
         public abstract void Read(EndianBinaryReader reader);
+        public abstract void Write(EndianBinaryWriter writer);
     }
 }
