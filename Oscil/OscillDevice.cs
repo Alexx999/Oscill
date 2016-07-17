@@ -15,17 +15,26 @@ namespace Oscil
         private SiUsbDevice _device;
         private Task _rxTask;
         private Task _txTask;
-        private const int _bufferLength = 4096;
-        private readonly byte[] _buffer = new byte[_bufferLength];
+        private const int BufferLength = 4096;
+        private readonly byte[] _buffer = new byte[BufferLength];
         private int _position;
         private readonly BufferBlock<Packet> _sendBuffer = new BufferBlock<Packet>();
         private bool _disposed;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        private readonly EndianBinaryReader _reader;
+        private readonly MemoryStream _ms;
+
+        static OscillDevice()
+        {
+            SiUsbDevice.SetTimeouts(1000, 1000);
+        }
 
         public OscillDevice(SiUsbDevice device)
         {
-            SiUsbDevice.SetTimeouts(1000, 1000);
             _device = device;
+            _ms = new MemoryStream(_buffer);
+            _ms.SetLength(0);
+            _reader = new EndianBinaryReader(EndianBitConverter.Big, _ms);
 
             StartLoops();
             Connect();
@@ -100,24 +109,33 @@ namespace Oscil
 
         private async Task ReadAndProcessAsync(CancellationToken token)
         {
-            var read = await _device.ReadAsync(_buffer, _position, _bufferLength - _position, token).ConfigureAwait(false);
-            _position += read;
+            var pos = _ms.Length;
+            _ms.SetLength(BufferLength);
+            var read = await _device.ReadAsync(_buffer, (int) pos, (int) (BufferLength - pos), token).ConfigureAwait(false);
+            _ms.SetLength(pos + read);
+            _ms.Position = 0;
 
             TryReadPacket();
         }
 
         private void TryReadPacket()
         {
-            if(_position < 1) return;
-            var type = (Opcode)_buffer[0];
-            var packet = PacketFactory.ReadPacket(type);
+            if(_ms.Length < 1) return;
+            var type = (Opcode)_reader.ReadByte();
+            var packet = PacketFactory.GetPacket(type);
 
-            if (!packet.Read(_buffer, 1, _position))
+            try
+            {
+                packet.Read(_reader);
+            }
+            catch
             {
                 return;
             }
 
-            Buffer.BlockCopy(_buffer, _position, _buffer, 0, _bufferLength - _position);
+            var pos = _ms.Position;
+            Buffer.BlockCopy(_buffer, (int) pos, _buffer, 0, (int) (BufferLength - pos));
+            _ms.SetLength(_ms.Length - _ms.Position);
         }
 
         public virtual void Dispose(bool disposing)
@@ -155,7 +173,7 @@ namespace Oscil
 
     internal static class PacketFactory
     {
-        public static Packet ReadPacket(Opcode opcode)
+        public static Packet GetPacket(Opcode opcode)
         {
             switch (opcode)
             {
@@ -195,7 +213,7 @@ namespace Oscil
     public class ConnectPacket : Packet
     {
         public ConnectPacket() : base(Opcode.Connect, new byte[] {16,0,16,0}) { }
-        public override bool Read(byte[] data, int index, int length)
+        public override void Read(EndianBinaryReader reader)
         {
             throw new NotImplementedException();
         }
@@ -204,16 +222,12 @@ namespace Oscil
     public class SuccessPacket : Packet
     {
         public SuccessPacket() : base(Opcode.Success, new byte[0]) { }
-        public override bool Read(byte[] input, int index, int length)
+        public override void Read(EndianBinaryReader reader)
         {
-            if (length < 3) return false;
-            var converter = new BigEndianBitConverter();
-            var len = converter.ToUInt16(input, index);
-            if (length < len) return false;
-            var data = new byte[len - 3];
-            Buffer.BlockCopy(input, 3, data, 0, data.Length);
+            var len = reader.ReadUInt16() - 3;
+            var data = new byte[len];
+            reader.Read(data, 0, len);
             Data = data;
-            return true;
         }
     }
 
@@ -232,6 +246,6 @@ namespace Oscil
             Opcode = opcode;
         }
 
-        public abstract bool Read(byte[] data, int index, int length);
+        public abstract void Read(EndianBinaryReader reader);
     }
 }
