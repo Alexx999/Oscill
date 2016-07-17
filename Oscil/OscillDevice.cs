@@ -13,8 +13,10 @@ namespace Oscil
 {
     public class OscillDevice : IDisposable
     {
-        private SiUsbDevice _device;
         private const int BufferLength = 4096;
+        private const int SpeedBase = 1842000;
+
+        private SiUsbDevice _device;
         private byte[] _buffer;
         private readonly BufferBlock<Packet> _sendBuffer = new BufferBlock<Packet>();
         private bool _disposed;
@@ -25,6 +27,7 @@ namespace Oscil
         private int _connectRetryCount;
         private int _maxConnectRetryCount = 1;
         private TaskCompletionSource<bool> _connectingTcs;
+        private TaskCompletionSource<int> _acceptSpeedTcs;
 
         static OscillDevice()
         {
@@ -60,6 +63,11 @@ namespace Oscil
             {
                 PacketReceived(successPacket);
             }
+            var acceptSpeedPacket = packet as AcceptSpeedPacket;
+            if (acceptSpeedPacket != null)
+            {
+                PacketReceived(acceptSpeedPacket);
+            }
         }
 
         private void PacketReceived(SuccessPacket packet)
@@ -71,6 +79,13 @@ namespace Oscil
             }
         }
 
+        private void PacketReceived(AcceptSpeedPacket packet)
+        {
+            var speed = SpeedBase/packet.Divisor;
+            _device.SetBaudRate((uint) speed);
+            _acceptSpeedTcs.SetResult(speed);
+        }
+
         public async Task<bool> ConnectAsync()
         {
             if (_connected) return true;
@@ -78,9 +93,13 @@ namespace Oscil
 
             EnqueuePacket(new ConnectPacket());
 
-            await Task.WhenAny(Task.Delay(1000, _cts.Token), _connectingTcs.Task).ConfigureAwait(true);
-
+            var task = _connectingTcs.Task;
+            await Task.WhenAny(Task.Delay(10000, _cts.Token), task).ConfigureAwait(true);
+            
             _connectingTcs = null;
+
+            if (task.IsCompleted) return true;
+
             return await CheckAndRetryConnectionAsync().ConfigureAwait(false);
         }
 
@@ -200,11 +219,10 @@ namespace Oscil
                 _cts.Dispose();
                 _ms.Dispose();
                 _reader.Dispose();
+                _device.Close();
+                _device.Dispose();
+                Debug.WriteLine("OscillDevice disposed");
             }
-            _device.Close();
-            _device.Dispose();
-
-            Debug.WriteLine("OscillDevice disposed");
         }
 
         public void Dispose()
@@ -225,6 +243,23 @@ namespace Oscil
         {
             EnqueuePacket(new ConnectPacket());
         }
+
+        public Task<int> SetSpeedAsync(int speed)
+        {
+            var remainder = SpeedBase % speed;
+
+            if (remainder != 0)
+            {
+                throw new ArgumentException();
+            }
+
+            var divisor = SpeedBase/speed;
+            var packet = new ChangeSpeedPacket((byte) divisor);
+
+            _acceptSpeedTcs = new TaskCompletionSource<int>();
+            EnqueuePacket(packet);
+            return _acceptSpeedTcs.Task;
+        }
     }
 
     internal static class PacketFactory
@@ -236,6 +271,10 @@ namespace Oscil
                 case Opcode.Success:
                 {
                     return new SuccessPacket();
+                }
+                case Opcode.AcceptSpeed:
+                {
+                    return new AcceptSpeedPacket();
                 }
             }
 
@@ -288,6 +327,28 @@ namespace Oscil
         }
     }
 
+    public class ChangeSpeedPacket : Packet
+    {
+        public byte Divisor { get; set; }
+
+        public ChangeSpeedPacket(byte divisor) : base(Opcode.ChangeSpeed)
+        {
+            Divisor = divisor;
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            writer.Write((byte)Opcode);
+            writer.Write((ushort)4);
+            writer.Write(Divisor);
+        }
+    }
+
     public class SuccessPacket : Packet
     {
         public byte[] Data { get; set; }
@@ -299,6 +360,23 @@ namespace Oscil
             var data = new byte[len];
             reader.Read(data, 0, len);
             Data = data;
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    public class AcceptSpeedPacket : Packet
+    {
+        public byte Divisor { get; set; }
+
+        public AcceptSpeedPacket() : base(Opcode.AcceptSpeed) { }
+        public override void Read(EndianBinaryReader reader)
+        {
+            var len = reader.ReadUInt16() - 3;
+            Divisor = reader.ReadByte();
         }
 
         public override void Write(EndianBinaryWriter writer)
