@@ -34,25 +34,11 @@ namespace Oscil
         {
             var res = SiUsbDevice.NumDevices;
             var desc = SiUsbDevice.GetProductString(0, ProductProperty.Description);
-            
-            _device = new OscillDevice(0);
 
-            /*
-            var res = SiUsbDevice.NumDevices;
-            var desc = SiUsbDevice.GetProductString(0, ProductProperty.Description);
-            SiUsbDevice.SetTimeouts(1000, 1000);
-            var device = SiUsbDevice.Open(0);
-            device.SetBaudRate(9600);
-            device.SetLineControl(StopBits.One, Parity.None, 8);
-            device.SetFlowControl(RxPinOption.StatusInput, TxPinOption.HeldInactive, TxPinOption.HeldActive, RxPinOption.StatusInput, RxPinOption.StatusInput, false);
-            var buffer = new byte[] {0x80, 0x00, 0x07, 0x10, 0x00, 0x10, 0x00};
-
-            var rb = new byte[16000];
-            device.Write(buffer, 0, buffer.Length);
-            await Task.Delay(10);
-            var read = device.Read(rb, 0, 16000);
-            device.Close();
-            Debug.WriteLine("Success");*/
+            using (_device = new OscillDevice(0))
+            {
+                var b = await _device.ConnectAsync().ConfigureAwait(false);
+            }
         }
 
         private void button2_Click(object sender, RoutedEventArgs e)

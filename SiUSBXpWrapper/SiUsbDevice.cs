@@ -12,6 +12,8 @@ namespace SiUSBXp
 {
     public sealed class SiUsbDevice : Stream
     {
+        internal const int ERROR_OPERATION_ABORTED = 0x3E3;
+
         private readonly SafeSiUsbHandle _device;
         private readonly Lazy<PartNumber> _partNumber;
         private readonly Lazy<string> _deviceProductString;
@@ -369,6 +371,10 @@ namespace SiUSBXp
             afsar.Wait();
             afsar.ReleaseNativeResource();
 
+            if (afsar.ErrorCode == ERROR_OPERATION_ABORTED)
+            {
+                throw new TaskCanceledException();
+            }
             if (afsar.ErrorCode != 0)
             {
                 throw ExceptionHelper.CodeToException(afsar.ErrorCode);
@@ -405,6 +411,10 @@ namespace SiUSBXp
             afsar.Wait();
             afsar.ReleaseNativeResource();
 
+            if (afsar.ErrorCode == ERROR_OPERATION_ABORTED)
+            {
+                throw new TaskCanceledException();
+            }
             if (afsar.ErrorCode != 0)
             {
                 throw ExceptionHelper.CodeToException(afsar.ErrorCode);

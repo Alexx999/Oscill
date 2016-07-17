@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
 using System.Threading;
@@ -13,8 +14,6 @@ namespace Oscil
     public class OscillDevice : IDisposable
     {
         private SiUsbDevice _device;
-        private Task _rxTask;
-        private Task _txTask;
         private const int BufferLength = 4096;
         private byte[] _buffer;
         private readonly BufferBlock<Packet> _sendBuffer = new BufferBlock<Packet>();
@@ -22,10 +21,10 @@ namespace Oscil
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private EndianBinaryReader _reader;
         private MemoryStream _ms;
-        private bool _connecting;
         private bool _connected;
         private int _connectRetryCount;
         private int _maxConnectRetryCount = 1;
+        private TaskCompletionSource<bool> _connectingTcs;
 
         static OscillDevice()
         {
@@ -35,11 +34,16 @@ namespace Oscil
         public OscillDevice(SiUsbDevice device)
         {
             _device = device;
+            _device.SetBaudRate(9600);
+            _device.SetLineControl(StopBits.One, Parity.None, 8);
+            _device.SetFlowControl(RxPinOption.StatusInput, TxPinOption.HeldInactive, TxPinOption.HeldActive, RxPinOption.StatusInput, RxPinOption.StatusInput, false);
             CreateBuffers();
-
             StartLoops();
-            Connect();
         }
+
+        public bool Connected => _connected;
+
+        public bool Connecting => _connectingTcs != null;
 
         private void CreateBuffers()
         {
@@ -51,40 +55,48 @@ namespace Oscil
 
         private void PacketReceived(Packet packet)
         {
-            if (_connecting && packet is SuccessPacket)
+            var successPacket = packet as SuccessPacket;
+            if (successPacket != null)
             {
-                _connecting = false;
-                _connected = true;
+                PacketReceived(successPacket);
             }
         }
 
-        private void Connect()
+        private void PacketReceived(SuccessPacket packet)
         {
-            if (_connected) return;
-            _connecting = true;
-            _device.SetBaudRate(9600);
-            _device.SetLineControl(StopBits.One, Parity.None, 8);
-            _device.SetFlowControl(RxPinOption.StatusInput, TxPinOption.HeldInactive, TxPinOption.HeldActive, RxPinOption.StatusInput, RxPinOption.StatusInput, false);
+            if (Connecting)
+            {
+                _connected = true;
+                _connectingTcs.SetResult(true);
+            }
+        }
+
+        public async Task<bool> ConnectAsync()
+        {
+            if (_connected) return true;
+            _connectingTcs = new TaskCompletionSource<bool>();
 
             SendPacket(new ConnectPacket());
 
-            Task.Delay(1000).ContinueWith(task => CheckAndRetryConnection());
+            await Task.WhenAny(Task.Delay(1000), _connectingTcs.Task).ConfigureAwait(true);
+
+            _connectingTcs = null;
+            return await CheckAndRetryConnectionAsync().ConfigureAwait(false);
         }
 
-        private void CheckAndRetryConnection()
+        private async Task<bool> CheckAndRetryConnectionAsync()
         {
-            if(_connected) return;
+            if(_connected) return true;
 
             _connectRetryCount++;
 
             if (_connectRetryCount == _maxConnectRetryCount)
             {
-                _connecting = false;
-                return;
+                return false;
             }
 
             CreateBuffers();
-            Connect();
+            return await ConnectAsync().ConfigureAwait(false);
         }
 
         private void SendPacket(Packet packet)
@@ -98,8 +110,8 @@ namespace Oscil
 
         private void StartLoops()
         {
-            _rxTask = Task.Run(ReadAndProcessLoopAsync);
-            _txTask = Task.Run(WritePacketAsync);
+            Task.Run(ReadAndProcessLoopAsync);
+            Task.Run(WritePacketAsync);
         }
 
         private async Task WritePacketAsync()
@@ -111,8 +123,9 @@ namespace Oscil
                     var nextPacket = await _sendBuffer.ReceiveAsync(_cts.Token).ConfigureAwait(false);
                     await WritePacketToDeviceAsync(nextPacket, _cts.Token).ConfigureAwait(false);
                 }
-                catch (Exception)
+                catch
                 {
+                    // ignored
                 }
             }
         }
@@ -137,8 +150,9 @@ namespace Oscil
                 {
                     await ReadAndProcessAsync(_cts.Token).ConfigureAwait(false);
                 }
-                catch (Exception)
+                catch
                 {
+                    // ignored
                 }
             }
         }
@@ -184,13 +198,13 @@ namespace Oscil
             {
                 _cts.Cancel();
                 _cts.Dispose();
-                _rxTask.Dispose();
-                _txTask.Dispose();
                 _ms.Dispose();
                 _reader.Dispose();
             }
             _device.Close();
             _device.Dispose();
+
+            Debug.WriteLine("OscillDevice disposed");
         }
 
         public void Dispose()
@@ -254,7 +268,13 @@ namespace Oscil
 
     public class ConnectPacket : Packet
     {
-        public ConnectPacket() : base(Opcode.Connect, new byte[] {16,0,16,0}) { }
+        public byte[] Data { get; set; }
+
+        public ConnectPacket() : base(Opcode.Connect)
+        {
+            Data = new byte[] {0x10, 0, 0x10, 0};
+        }
+
         public override void Read(EndianBinaryReader reader)
         {
             throw new NotImplementedException();
@@ -270,7 +290,9 @@ namespace Oscil
 
     public class SuccessPacket : Packet
     {
-        public SuccessPacket() : base(Opcode.Success, new byte[0]) { }
+        public byte[] Data { get; set; }
+
+        public SuccessPacket() : base(Opcode.Success) { }
         public override void Read(EndianBinaryReader reader)
         {
             var len = reader.ReadUInt16() - 3;
@@ -288,12 +310,6 @@ namespace Oscil
     public abstract class Packet
     {
         public Opcode Opcode;
-        public byte[] Data;
-
-        public Packet(Opcode opcode, byte[] bytes) : this(opcode)
-        {
-            Data = bytes;
-        }
 
         public Packet(Opcode opcode)
         {
