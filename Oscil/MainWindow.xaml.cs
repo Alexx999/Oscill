@@ -35,8 +35,12 @@ namespace Oscil
             var tgtSerial = "201501082132283";
             var devices = SiUsbDeviceProperties.GetAll();
             var tgtDevice = devices.FirstOrDefault(d => d.SerialNumber == tgtSerial);
-            
-            if(tgtDevice == null) return;
+
+            if (tgtDevice == null)
+            {
+                Debug.WriteLine("Oscill not found");
+                return;
+            }
 
             _device = new OscillDevice(tgtDevice.Id);
             var connected = await _device.ConnectAsync().ConfigureAwait(false);
@@ -50,7 +54,7 @@ namespace Oscil
                 return;
             }
             await _device.SetSpeedAsync(921600).ConfigureAwait(false);
-            _device.SendStart();
+            //_device.SendStart();
         }
 
         private void button2_Click(object sender, RoutedEventArgs e)

@@ -21,7 +21,7 @@ namespace Oscil
         private byte[] _buffer;
         private readonly BufferBlock<Packet> _sendBuffer = new BufferBlock<Packet>();
         private bool _disposed;
-        private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        private CancellationTokenSource _cts;
         private EndianBinaryReader _reader;
         private MemoryStream _ms;
         private bool _connected;
@@ -31,6 +31,8 @@ namespace Oscil
         private TaskCompletionSource<uint> _acceptSpeedTcs;
         private readonly uint[] _supportedSpeeds = { 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 };
         private uint _currentSpeed;
+        private Task _rxtask;
+        private Task _txtask;
 
 
         static OscillDevice()
@@ -72,6 +74,7 @@ namespace Oscil
 
         private void PacketReceived(Packet packet)
         {
+            Debug.WriteLine($"Oscill: received {packet.Opcode} packet");
             var successPacket = packet as SuccessPacket;
             if (successPacket != null)
             {
@@ -121,11 +124,15 @@ namespace Oscil
             EnqueuePacket(new ConnectPacket());
 
             var task = _connectingTcs.Task;
-            var finishedTask = await Task.WhenAny(Task.Delay(100, _cts.Token), task).ConfigureAwait(true);
+            var finishedTask = await Task.WhenAny(Task.Delay(100, _cts.Token), task).ConfigureAwait(false);
 
             _connectingTcs = null;
 
             if (ReferenceEquals(task, finishedTask)) return true;
+
+            _cts.Cancel();
+            
+            await Task.WhenAll(_rxtask, _txtask).ConfigureAwait(false);
 
             return await CheckAndRetryConnectionAsync().ConfigureAwait(false);
         }
@@ -150,6 +157,7 @@ namespace Oscil
             }
 
             CreateBuffers();
+            StartLoops();
             return await ConnectAsync().ConfigureAwait(false);
         }
 
@@ -174,8 +182,9 @@ namespace Oscil
 
         private void StartLoops()
         {
-            Task.Run(ReadAndProcessLoopAsync);
-            Task.Run(WritePacketAsync);
+            _cts = new CancellationTokenSource();
+            _rxtask = Task.Run(ReadAndProcessLoopAsync);
+            _txtask = Task.Run(WritePacketAsync);
         }
 
         private async Task WritePacketAsync()
@@ -207,6 +216,7 @@ namespace Oscil
 
             var bytes = memoryStream.ToArray();
 
+            Debug.WriteLine($"Oscill: sending {packet.Opcode} packet");
             return _device.WriteAsync(bytes, 0, bytes.Length, token);
         }
 

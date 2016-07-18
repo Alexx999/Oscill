@@ -85,9 +85,14 @@ namespace SiUSBXp
 
         public static void ThrowIfError(int code)
         {
-            if(code == SiUsbXpDll.SI_SUCCESS || code == SiUsbXpDll.SI_IO_PENDING) return;
+            if(!IsError(code)) return;
 
             throw CodeToException(code);
+        }
+
+        public static bool IsError(int code)
+        {
+            return !(code == SiUsbXpDll.SI_SUCCESS || code == SiUsbXpDll.SI_IO_PENDING);
         }
     }
 
