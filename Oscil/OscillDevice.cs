@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -14,7 +15,7 @@ namespace Oscil
     public class OscillDevice : IDisposable
     {
         private const int BufferLength = 4096;
-        private const int SpeedBase = 1842000;
+        private const uint SpeedBase = 1843200;
 
         private SiUsbDevice _device;
         private byte[] _buffer;
@@ -27,7 +28,10 @@ namespace Oscil
         private int _connectRetryCount;
         private int _maxConnectRetryCount = 1;
         private TaskCompletionSource<bool> _connectingTcs;
-        private TaskCompletionSource<int> _acceptSpeedTcs;
+        private TaskCompletionSource<uint> _acceptSpeedTcs;
+        private readonly uint[] _supportedSpeeds = { 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 };
+        private uint _currentSpeed;
+
 
         static OscillDevice()
         {
@@ -37,7 +41,7 @@ namespace Oscil
         public OscillDevice(SiUsbDevice device)
         {
             _device = device;
-            _device.SetBaudRate(9600);
+            CurrentSpeed = _supportedSpeeds[0];
             _device.SetLineControl(StopBits.One, Parity.None, 8);
             _device.SetFlowControl(RxPinOption.StatusInput, TxPinOption.HeldInactive, TxPinOption.HeldActive, RxPinOption.StatusInput, RxPinOption.StatusInput, false);
             CreateBuffers();
@@ -47,6 +51,16 @@ namespace Oscil
         public bool Connected => _connected;
 
         public bool Connecting => _connectingTcs != null;
+
+        public uint CurrentSpeed
+        {
+            get { return _currentSpeed; }
+            set
+            {
+                _currentSpeed = value;
+                _device.SetBaudRate(_currentSpeed);
+            }
+        }
 
         private void CreateBuffers()
         {
@@ -68,6 +82,11 @@ namespace Oscil
             {
                 PacketReceived(acceptSpeedPacket);
             }
+            var errorPacket = packet as ErrorPacket;
+            if (errorPacket != null)
+            {
+                PacketReceived(errorPacket);
+            }
         }
 
         private void PacketReceived(SuccessPacket packet)
@@ -81,9 +100,17 @@ namespace Oscil
 
         private void PacketReceived(AcceptSpeedPacket packet)
         {
-            var speed = SpeedBase/packet.Divisor;
-            _device.SetBaudRate((uint) speed);
+            var speed = SpeedBase / packet.Divisor;
+            CurrentSpeed = speed;
             _acceptSpeedTcs.SetResult(speed);
+        }
+
+        private void PacketReceived(ErrorPacket packet)
+        {
+            if (Debugger.IsAttached)
+            {
+                Debugger.Break();
+            }
         }
 
         public async Task<bool> ConnectAsync()
@@ -94,28 +121,46 @@ namespace Oscil
             EnqueuePacket(new ConnectPacket());
 
             var task = _connectingTcs.Task;
-            await Task.WhenAny(Task.Delay(10000, _cts.Token), task).ConfigureAwait(true);
-            
+            var finishedTask = await Task.WhenAny(Task.Delay(100, _cts.Token), task).ConfigureAwait(true);
+
             _connectingTcs = null;
 
-            if (task.IsCompleted) return true;
+            if (ReferenceEquals(task, finishedTask)) return true;
 
             return await CheckAndRetryConnectionAsync().ConfigureAwait(false);
         }
 
         private async Task<bool> CheckAndRetryConnectionAsync()
         {
-            if(_connected) return true;
+            if (_connected) return true;
 
-            _connectRetryCount++;
 
             if (_connectRetryCount == _maxConnectRetryCount)
             {
-                return false;
+                if (!CheckSpeed())
+                {
+                    return false;
+                }
+
+                _connectRetryCount = 0;
+            }
+            else
+            {
+                _connectRetryCount++;
             }
 
             CreateBuffers();
             return await ConnectAsync().ConfigureAwait(false);
+        }
+
+        private bool CheckSpeed()
+        {
+            var idx = Array.FindIndex(_supportedSpeeds, v => v == _currentSpeed);
+            if (idx == _supportedSpeeds.Length - 1) return false;
+
+            CurrentSpeed = _supportedSpeeds[idx + 1];
+            Debug.WriteLine($"Oscill: Speed autoincreased to {CurrentSpeed}");
+            return true;
         }
 
         private void EnqueuePacket(Packet packet)
@@ -141,6 +186,10 @@ namespace Oscil
                 {
                     var nextPacket = await _sendBuffer.ReceiveAsync(_cts.Token).ConfigureAwait(false);
                     await WritePacketToDeviceAsync(nextPacket, _cts.Token).ConfigureAwait(false);
+                }
+                catch (TaskCanceledException)
+                {
+                    return;
                 }
                 catch
                 {
@@ -169,6 +218,10 @@ namespace Oscil
                 {
                     await ReadAndProcessAsync(_cts.Token).ConfigureAwait(false);
                 }
+                catch (TaskCanceledException)
+                {
+                    return;
+                }
                 catch
                 {
                     // ignored
@@ -180,7 +233,7 @@ namespace Oscil
         {
             var pos = _ms.Length;
             _ms.SetLength(BufferLength);
-            var read = await _device.ReadAsync(_buffer, (int) pos, (int) (BufferLength - pos), token).ConfigureAwait(false);
+            var read = await _device.ReadAsync(_buffer, (int)pos, (int)(BufferLength - pos), token).ConfigureAwait(false);
             _ms.SetLength(pos + read);
             _ms.Position = 0;
 
@@ -189,7 +242,7 @@ namespace Oscil
 
         private void TryReadPacket()
         {
-            if(_ms.Length < 1) return;
+            if (_ms.Length < 1) return;
             var type = (Opcode)_reader.ReadByte();
 
             Packet packet;
@@ -205,7 +258,7 @@ namespace Oscil
             }
 
             var pos = _ms.Position;
-            Buffer.BlockCopy(_buffer, (int) pos, _buffer, 0, (int) (BufferLength - pos));
+            Buffer.BlockCopy(_buffer, (int)pos, _buffer, 0, (int)(BufferLength - pos));
             _ms.SetLength(_ms.Length - _ms.Position);
 
             PacketReceived(packet);
@@ -221,13 +274,13 @@ namespace Oscil
                 _reader.Dispose();
                 _device.Close();
                 _device.Dispose();
-                Debug.WriteLine("OscillDevice disposed");
+                Debug.WriteLine("Oscill Device disposed");
             }
         }
 
         public void Dispose()
         {
-            if(_disposed) return;
+            if (_disposed) return;
             _disposed = true;
 
             GC.SuppressFinalize(this);
@@ -244,19 +297,23 @@ namespace Oscil
             EnqueuePacket(new ConnectPacket());
         }
 
-        public Task<int> SetSpeedAsync(int speed)
-        {
-            var remainder = SpeedBase % speed;
 
-            if (remainder != 0)
+        public void SendStart()
+        {
+            EnqueuePacket(new StartPacket());
+        }
+
+        public Task<uint> SetSpeedAsync(uint speed)
+        {
+            if (!_supportedSpeeds.Contains(speed))
             {
                 throw new ArgumentException();
             }
 
-            var divisor = SpeedBase/speed;
-            var packet = new ChangeSpeedPacket((byte) divisor);
+            var divisor = SpeedBase / speed;
+            var packet = new ChangeSpeedPacket((byte)divisor);
 
-            _acceptSpeedTcs = new TaskCompletionSource<int>();
+            _acceptSpeedTcs = new TaskCompletionSource<uint>();
             EnqueuePacket(packet);
             return _acceptSpeedTcs.Task;
         }
@@ -269,13 +326,17 @@ namespace Oscil
             switch (opcode)
             {
                 case Opcode.Success:
-                {
-                    return new SuccessPacket();
-                }
+                    {
+                        return new SuccessPacket();
+                    }
                 case Opcode.AcceptSpeed:
-                {
-                    return new AcceptSpeedPacket();
-                }
+                    {
+                        return new AcceptSpeedPacket();
+                    }
+                case Opcode.Error:
+                    {
+                        return new ErrorPacket();
+                    }
             }
 
             throw new ArgumentException("Bad value", nameof(opcode));
@@ -305,13 +366,52 @@ namespace Oscil
         Success = 0xa0
     }
 
+    public class ErrorPacket : Packet
+    {
+
+        public ErrorPacket() : base(Opcode.Error)
+        {
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            var len = reader.ReadUInt16() - 3;
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+        }
+    }
+
+    public class StartPacket : Packet
+    {
+        public byte[] Data { get; set; }
+
+        public StartPacket() : base(Opcode.DataPutF)
+        {
+            Data = new byte[] { 0x72, 0, 0x04, 43 };
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            writer.Write((byte)Opcode);
+            writer.Write((short)(Data.Length + 3));
+            writer.Write(Data, 0, Data.Length);
+        }
+    }
+
     public class ConnectPacket : Packet
     {
         public byte[] Data { get; set; }
 
         public ConnectPacket() : base(Opcode.Connect)
         {
-            Data = new byte[] {0x10, 0, 0x10, 0};
+            Data = new byte[] { 0x10, 0, 0x10, 0 };
         }
 
         public override void Read(EndianBinaryReader reader)

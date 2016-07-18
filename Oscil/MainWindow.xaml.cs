@@ -39,8 +39,18 @@ namespace Oscil
             if(tgtDevice == null) return;
 
             _device = new OscillDevice(tgtDevice.Id);
-            var b = await _device.ConnectAsync().ConfigureAwait(false);
-            await _device.SetSpeedAsync(921000).ConfigureAwait(false);
+            var connected = await _device.ConnectAsync().ConfigureAwait(false);
+            if (connected)
+            {
+                Debug.WriteLine("Oscill connected");
+            }
+            else
+            {
+                Debug.WriteLine("Oscill not connected");
+                return;
+            }
+            await _device.SetSpeedAsync(921600).ConfigureAwait(false);
+            _device.SendStart();
         }
 
         private void button2_Click(object sender, RoutedEventArgs e)
