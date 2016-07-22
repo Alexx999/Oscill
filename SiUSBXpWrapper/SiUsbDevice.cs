@@ -15,6 +15,7 @@ namespace SiUSBXp
     public sealed class SiUsbDevice : Stream
     {
         internal const int ERROR_OPERATION_ABORTED = 0x3E3;
+        internal const int ERROR_NOT_FOUND = 0x490;
 
         private readonly SafeSiUsbHandle _device;
         private readonly Lazy<PartNumber> _partNumber;
@@ -850,11 +851,42 @@ namespace SiUSBXp
             {
                 int errorCode = Marshal.GetLastWin32Error();
 
-                if (Debugger.IsAttached)
+                if (errorCode != SiUsbDevice.ERROR_NOT_FOUND)
                 {
-                    Debugger.Break();
+                    throw new IOException(GetMessage(errorCode), MakeHRFromErrorCode(errorCode));
                 }
             }
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, BestFitMapping = true)]
+        internal static extern int FormatMessage(int dwFlags, IntPtr lpSource,
+                    int dwMessageId, int dwLanguageId, [Out]StringBuilder lpBuffer,
+                    int nSize, IntPtr va_list_arguments);
+
+        private const int FORMAT_MESSAGE_IGNORE_INSERTS = 0x00000200;
+        private const int FORMAT_MESSAGE_FROM_SYSTEM = 0x00001000;
+        private const int FORMAT_MESSAGE_ARGUMENT_ARRAY = 0x00002000;
+
+        // Gets an error message for a Win32 error code.
+        internal static String GetMessage(int errorCode)
+        {
+            StringBuilder sb = new StringBuilder(512);
+            int result = FormatMessage(FORMAT_MESSAGE_IGNORE_INSERTS |
+                FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ARGUMENT_ARRAY,
+                IntPtr.Zero, errorCode, 0, sb, sb.Capacity, IntPtr.Zero);
+            if (result != 0)
+            {
+                return sb.ToString();
+            }
+            else
+            {
+                return $"Unknown Error {errorCode}";
+            }
+        }
+        internal static int MakeHRFromErrorCode(int errorCode)
+        {
+            Debug.Assert((0xFFFF0000 & errorCode) == 0, "This is an HRESULT, not an error code!");
+            return unchecked(((int)0x80070000) | errorCode);
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]
