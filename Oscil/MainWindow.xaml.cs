@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Ports;
 using System.Linq;
@@ -54,12 +55,21 @@ namespace Oscil
                 return;
             }
             await _device.SetSpeedAsync(921600).ConfigureAwait(false);
-            //_device.SendStart();
+            var model = await _device.GetDeviceInfoAsync(DeviceInfoField.Model).ConfigureAwait(false);
+            var hard = await _device.GetDeviceInfoAsync(DeviceInfoField.Hard).ConfigureAwait(false);
+            var soft = await _device.GetDeviceInfoAsync(DeviceInfoField.Soft).ConfigureAwait(false);
+            var serial = await _device.GetDeviceInfoAsync(DeviceInfoField.Serial).ConfigureAwait(false);
         }
 
         private void button2_Click(object sender, RoutedEventArgs e)
         {
             _device.SendConnect();
+        }
+
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            _device.Dispose();
+            base.OnClosing(e);
         }
     }
 }

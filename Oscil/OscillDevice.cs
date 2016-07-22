@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -29,6 +31,7 @@ namespace Oscil
         private int _maxConnectRetryCount = 1;
         private TaskCompletionSource<bool> _connectingTcs;
         private TaskCompletionSource<uint> _acceptSpeedTcs;
+        private ConcurrentDictionary<DeviceInfoField, TaskCompletionSource<string>> _deviceInfoTasks = new ConcurrentDictionary<DeviceInfoField, TaskCompletionSource<string>>();
         private readonly uint[] _supportedSpeeds = { 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 };
         private uint _currentSpeed;
         private Task _rxtask;
@@ -75,29 +78,33 @@ namespace Oscil
         private void PacketReceived(Packet packet)
         {
             Debug.WriteLine($"Oscill: received {packet.Opcode} packet");
-            var successPacket = packet as SuccessPacket;
-            if (successPacket != null)
-            {
-                PacketReceived(successPacket);
-            }
-            var acceptSpeedPacket = packet as AcceptSpeedPacket;
-            if (acceptSpeedPacket != null)
-            {
-                PacketReceived(acceptSpeedPacket);
-            }
-            var errorPacket = packet as ErrorPacket;
-            if (errorPacket != null)
-            {
-                PacketReceived(errorPacket);
-            }
+            PacketReceived((dynamic)packet);
         }
 
-        private void PacketReceived(SuccessPacket packet)
+        private void PacketReceived(ConnectSuccessPacket packet)
         {
             if (Connecting)
             {
                 _connected = true;
                 _connectingTcs.SetResult(true);
+            }
+        }
+
+        private void PacketReceived(GenericSuccessPacket packet)
+        {
+            Debug.WriteLine($"Oscill: received unknown success packet with type {packet.Type:X}");
+        }
+
+        private void PacketReceived(DeviceInfoSuccessPacket packet)
+        {
+            TaskCompletionSource<string> tcs;
+            if (_deviceInfoTasks.TryGetValue(packet.DeviceInfoField, out tcs))
+            {
+                tcs.SetResult(packet.Data);
+            }
+            else
+            {
+                Debug.WriteLine("Oscill: Got DeviceInfo response without request");
             }
         }
 
@@ -200,6 +207,10 @@ namespace Oscil
                 {
                     return;
                 }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
                 catch
                 {
                     // ignored
@@ -209,6 +220,7 @@ namespace Oscil
 
         private Task WritePacketToDeviceAsync(Packet packet, CancellationToken token)
         {
+            token.ThrowIfCancellationRequested();
             var memoryStream = new MemoryStream();
             var writer = new EndianBinaryWriter(EndianBitConverter.Big, memoryStream);
             packet.Write(writer);
@@ -232,6 +244,10 @@ namespace Oscil
                 {
                     return;
                 }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
                 catch
                 {
                     // ignored
@@ -241,9 +257,11 @@ namespace Oscil
 
         private async Task ReadAndProcessAsync(CancellationToken token)
         {
+            token.ThrowIfCancellationRequested();
             var pos = _ms.Length;
             _ms.SetLength(BufferLength);
             var read = await _device.ReadAsync(_buffer, (int)pos, (int)(BufferLength - pos), token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
             _ms.SetLength(pos + read);
             _ms.Position = 0;
 
@@ -252,14 +270,13 @@ namespace Oscil
 
         private void TryReadPacket()
         {
-            if (_ms.Length < 1) return;
-            var type = (Opcode)_reader.ReadByte();
+            if (_ms.Length == 0) return;
 
             Packet packet;
 
             try
             {
-                packet = PacketFactory.GetPacket(type);
+                packet = PacketFactory.GetPacket(_reader);
                 packet.Read(_reader);
             }
             catch
@@ -267,14 +284,25 @@ namespace Oscil
                 return;
             }
 
+            if (packet.Length == 0)
+            {
+                throw new InvalidOperationException("Packet has wrong length");
+            }
+
             var pos = _ms.Position;
+
+            if (pos != packet.Length)
+            {
+                throw new InvalidDataException("Packet wasn't fully read");
+            }
+
             Buffer.BlockCopy(_buffer, (int)pos, _buffer, 0, (int)(BufferLength - pos));
             _ms.SetLength(_ms.Length - _ms.Position);
 
             PacketReceived(packet);
         }
 
-        public virtual void Dispose(bool disposing)
+        protected virtual void Dispose(bool disposing)
         {
             if (disposing)
             {
@@ -299,6 +327,7 @@ namespace Oscil
 
         ~OscillDevice()
         {
+            Debug.WriteLine("Warning: Oscill device wasn't disposed");
             Dispose(false);
         }
 
@@ -307,10 +336,21 @@ namespace Oscil
             EnqueuePacket(new ConnectPacket());
         }
 
-
         public void SendStart()
         {
             EnqueuePacket(new StartPacket());
+        }
+
+        public Task<string> GetDeviceInfoAsync(DeviceInfoField field)
+        {
+            var task = _deviceInfoTasks.GetOrAdd(field, f =>
+            {
+                var tcs = new TaskCompletionSource<string>();
+                EnqueuePacket(new GetDeviceInfoPacket(field));
+                return tcs;
+            });
+
+            return task.Task;
         }
 
         public Task<uint> SetSpeedAsync(uint speed)
@@ -331,13 +371,14 @@ namespace Oscil
 
     internal static class PacketFactory
     {
-        public static Packet GetPacket(Opcode opcode)
+        public static Packet GetPacket(EndianBinaryReader reader)
         {
+            var opcode = (Opcode) reader.ReadByte();
             switch (opcode)
             {
                 case Opcode.Success:
                     {
-                        return new SuccessPacket();
+                        return GetSuccessPacket(reader);
                     }
                 case Opcode.AcceptSpeed:
                     {
@@ -350,6 +391,27 @@ namespace Oscil
             }
 
             throw new ArgumentException("Bad value", nameof(opcode));
+        }
+
+        private static Packet GetSuccessPacket(EndianBinaryReader reader)
+        {
+            var length = reader.ReadUInt16();
+            var type = (SuccessType) reader.ReadUInt32();
+            switch (type)
+            {
+                case SuccessType.Connect:
+                {
+                    return new ConnectSuccessPacket(length);
+                }
+                case SuccessType.DeviceInfo:
+                {
+                    return new DeviceInfoSuccessPacket(length);
+                }
+                default:
+                {
+                    return new GenericSuccessPacket(length, type);
+                }
+            }
         }
     }
 
@@ -376,6 +438,20 @@ namespace Oscil
         Success = 0xa0
     }
 
+    public enum SuccessType : uint
+    {
+        Connect = 0x10000018,
+        DeviceInfo = 0x70000656
+    }
+
+    public enum DeviceInfoField : ushort
+    {
+        Model = 0x4e4d,
+        Hard = 0x4857,
+        Soft = 0x5357,
+        Serial = 0x534E
+    }
+
     public class ErrorPacket : Packet
     {
 
@@ -385,7 +461,7 @@ namespace Oscil
 
         public override void Read(EndianBinaryReader reader)
         {
-            var len = reader.ReadUInt16() - 3;
+            Length = reader.ReadUInt16();
         }
 
         public override void Write(EndianBinaryWriter writer)
@@ -412,6 +488,30 @@ namespace Oscil
             writer.Write((byte)Opcode);
             writer.Write((short)(Data.Length + 3));
             writer.Write(Data, 0, Data.Length);
+        }
+    }
+
+    public class GetDeviceInfoPacket : Packet
+    {
+        private const uint DeviceInfoHeader = 0x70000656;
+        public DeviceInfoField Field { get; set; }
+
+        public GetDeviceInfoPacket(DeviceInfoField field) : base(Opcode.DataGetF)
+        {
+            Field = field;
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            writer.Write((byte)Opcode);
+            writer.Write((ushort)9);
+            writer.Write(DeviceInfoHeader);
+            writer.Write((ushort)Field);
         }
     }
 
@@ -461,20 +561,86 @@ namespace Oscil
 
     public class SuccessPacket : Packet
     {
-        public byte[] Data { get; set; }
+        public SuccessType Type { get; set; }
+        
+        public SuccessPacket(ushort length, SuccessType connect) : base(Opcode.Success)
+        {
+            Length = length;
+            Type = connect;
+        }
 
-        public SuccessPacket() : base(Opcode.Success) { }
         public override void Read(EndianBinaryReader reader)
         {
-            var len = reader.ReadUInt16() - 3;
-            var data = new byte[len];
-            reader.Read(data, 0, len);
+            throw new NotSupportedException();
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    public class ConnectSuccessPacket : SuccessPacket
+    {
+        public ConnectSuccessPacket(ushort length) : base(length, SuccessType.Connect)
+        {
+            
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    public class GenericSuccessPacket : SuccessPacket
+    {
+        public byte[] Data { get; set; }
+
+        public GenericSuccessPacket(ushort length, SuccessType connect) : base(length, connect)
+        {
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            var dataLen = Length - 7;
+            var data = new byte[dataLen];
+            reader.Read(data, 0, dataLen);
             Data = data;
         }
 
         public override void Write(EndianBinaryWriter writer)
         {
-            throw new NotImplementedException();
+            throw new NotSupportedException();
+        }
+    }
+
+    public class DeviceInfoSuccessPacket : SuccessPacket
+    {
+        public DeviceInfoField DeviceInfoField { get; set; }
+        public string Data { get; set; }
+
+        public DeviceInfoSuccessPacket(ushort length) : base(length, SuccessType.DeviceInfo)
+        {
+            
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            DeviceInfoField = (DeviceInfoField) reader.ReadUInt16();
+            var someByte = reader.ReadByte();
+            var dataLen = Length - 10;
+            var data = reader.ReadBytes(dataLen);
+            Data = Encoding.ASCII.GetString(data);
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            throw new NotSupportedException();
         }
     }
 
@@ -485,7 +651,7 @@ namespace Oscil
         public AcceptSpeedPacket() : base(Opcode.AcceptSpeed) { }
         public override void Read(EndianBinaryReader reader)
         {
-            var len = reader.ReadUInt16() - 3;
+            Length = reader.ReadUInt16();
             Divisor = reader.ReadByte();
         }
 
@@ -497,7 +663,8 @@ namespace Oscil
 
     public abstract class Packet
     {
-        public Opcode Opcode;
+        public Opcode Opcode { get; }
+        public ushort Length { get; protected set; }
 
         public Packet(Opcode opcode)
         {
