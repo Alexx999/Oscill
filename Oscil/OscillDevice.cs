@@ -415,6 +415,7 @@ namespace Oscil
         private static ResponsePacket GetSuccessPacket(EndianBinaryReader reader)
         {
             var length = reader.ReadUInt16();
+            if(length == 3) return new GenericSuccessPacket(3, 0);
             var type = (HeadId) reader.ReadByte();
             switch (type)
             {
@@ -592,7 +593,7 @@ namespace Oscil
 
         public StartPacket() : base(Opcode.DataPutF)
         {
-            Data = new byte[] { 0x72, 0, 0x04, 43 };
+            Data = new byte[] { 0x72, 0x00, 0x04, 0x43 };
         }
 
         protected override void WriteBody(EndianBinaryWriter writer)
@@ -674,10 +675,10 @@ namespace Oscil
     {
         public HeadId Type { get; }
         
-        public SuccessPacket(ushort length, HeadId connect) : base(RespCode.Success)
+        public SuccessPacket(ushort length, HeadId headId) : base(RespCode.Success)
         {
             Length = length;
-            Type = connect;
+            Type = headId;
         }
     }
 
@@ -703,13 +704,13 @@ namespace Oscil
     {
         public byte[] Data { get; set; }
 
-        public GenericSuccessPacket(ushort length, HeadId connect) : base(length, connect)
+        public GenericSuccessPacket(ushort length, HeadId headId) : base(length, headId)
         {
         }
 
         public override void Read(EndianBinaryReader reader)
         {
-            var dataLen = Length - 7;
+            var dataLen = Length - 3;
             var data = new byte[dataLen];
             reader.Read(data, 0, dataLen);
             Data = data;

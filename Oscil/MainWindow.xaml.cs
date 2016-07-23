@@ -62,11 +62,23 @@ namespace Oscil
             var ds = await _device.SetRegisterAsync("TD", 0, SizeId.FourByte).ConfigureAwait(false);
             var asw = await _device.SetRegisterAsync("TC", 38, SizeId.TwoByte).ConfigureAwait(false);
             var sample = await _device.SetRegisterAsync("RS", 0, SizeId.OneByte).ConfigureAwait(false);
+            var minNumPassStrob = await _device.SetRegisterAsync("AR", 15, SizeId.OneByte).ConfigureAwait(false);
+            var minNumPassAvgPick = await _device.SetRegisterAsync("AP", 0, SizeId.OneByte).ConfigureAwait(false);
+            var mCycle = await _device.SetRegisterAsync("MC", 1248, SizeId.TwoByte).ConfigureAwait(false);
+            var toSincA = await _device.SetRegisterAsync("TA", 3338675, SizeId.FourByte).ConfigureAwait(false);
+            var toSincW = await _device.SetRegisterAsync("TW", 3338675, SizeId.FourByte).ConfigureAwait(false);
+            var sync = await _device.SetRegisterAsync("T1", 32, SizeId.OneByte).ConfigureAwait(false);
+            var input = await _device.SetRegisterAsync("O1", 0, SizeId.OneByte).ConfigureAwait(false);
+            var sampleMode = await _device.SetRegisterAsync("M1", 4, SizeId.OneByte).ConfigureAwait(false);
+            var sens = await _device.SetRegisterAsync("V1", 1000, SizeId.TwoByte).ConfigureAwait(false);
+            var shift = await _device.SetRegisterAsync("P1", 0, SizeId.TwoByte).ConfigureAwait(false);
+            var levelSync = await _device.SetRegisterAsync("S1", 127, SizeId.OneByte).ConfigureAwait(false);
+            var typeSync = await _device.SetRegisterAsync("RT", 2, SizeId.OneByte).ConfigureAwait(false);
         }
 
         private void button2_Click(object sender, RoutedEventArgs e)
         {
-            //_device.SendConnect();
+            _device.SendStart();
         }
 
         protected override void OnClosing(CancelEventArgs e)
