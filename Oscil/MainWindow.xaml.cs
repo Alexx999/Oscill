@@ -59,6 +59,9 @@ namespace Oscil
             var hard = await _device.GetDeviceInfoAsync(DeviceInfoField.Hard).ConfigureAwait(false);
             var soft = await _device.GetDeviceInfoAsync(DeviceInfoField.Soft).ConfigureAwait(false);
             var serial = await _device.GetDeviceInfoAsync(DeviceInfoField.Serial).ConfigureAwait(false);
+            var ds = await _device.SetParametherAsync(ParametherField.DelayedSweep, 0).ConfigureAwait(false);
+            var asw = await _device.SetParametherAsync(ParametherField.AlignSweep, 38).ConfigureAwait(false);
+            var sample = await _device.SetParametherAsync(ParametherField.SampleMethod, (byte)0).ConfigureAwait(false);
         }
 
         private void button2_Click(object sender, RoutedEventArgs e)
@@ -68,7 +71,7 @@ namespace Oscil
 
         protected override void OnClosing(CancelEventArgs e)
         {
-            _device.Dispose();
+            _device?.Dispose();
             base.OnClosing(e);
         }
     }

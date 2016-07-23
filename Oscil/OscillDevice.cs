@@ -21,7 +21,7 @@ namespace Oscil
 
         private SiUsbDevice _device;
         private byte[] _buffer;
-        private readonly BufferBlock<Packet> _sendBuffer = new BufferBlock<Packet>();
+        private readonly BufferBlock<RequestPacket> _sendBuffer = new BufferBlock<RequestPacket>();
         private bool _disposed;
         private CancellationTokenSource _cts;
         private EndianBinaryReader _reader;
@@ -31,7 +31,9 @@ namespace Oscil
         private int _maxConnectRetryCount = 1;
         private TaskCompletionSource<bool> _connectingTcs;
         private TaskCompletionSource<uint> _acceptSpeedTcs;
-        private ConcurrentDictionary<DeviceInfoField, TaskCompletionSource<string>> _deviceInfoTasks = new ConcurrentDictionary<DeviceInfoField, TaskCompletionSource<string>>();
+        private readonly ConcurrentDictionary<DeviceInfoField, TaskCompletionSource<string>> _deviceInfoTasks = new ConcurrentDictionary<DeviceInfoField, TaskCompletionSource<string>>();
+        private readonly ConcurrentDictionary<ParametherField, TaskCompletionSource<int>> _parametherFieldTasks = new ConcurrentDictionary<ParametherField, TaskCompletionSource<int>>();
+        private readonly ConcurrentDictionary<ParametherField, TaskCompletionSource<byte>> _parametherFieldByteTasks = new ConcurrentDictionary<ParametherField, TaskCompletionSource<byte>>();
         private readonly uint[] _supportedSpeeds = { 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 };
         private uint _currentSpeed;
         private Task _rxtask;
@@ -75,7 +77,7 @@ namespace Oscil
             _reader = new EndianBinaryReader(EndianBitConverter.Big, _ms);
         }
 
-        private void PacketReceived(Packet packet)
+        private void PacketReceived(ResponsePacket packet)
         {
             Debug.WriteLine($"Oscill: received {packet.Opcode} packet");
             PacketReceived((dynamic)packet);
@@ -93,6 +95,32 @@ namespace Oscil
         private void PacketReceived(GenericSuccessPacket packet)
         {
             Debug.WriteLine($"Oscill: received unknown success packet with type {packet.Type:X}");
+        }
+
+        private void PacketReceived(GetParametherSuccessPacket packet)
+        {
+            TaskCompletionSource<int> tcs;
+            if (_parametherFieldTasks.TryRemove(packet.ParametherField, out tcs))
+            {
+                tcs.SetResult(packet.Value);
+            }
+            else
+            {
+                Debug.WriteLine("Oscill: Got DeviceInfo response without request");
+            }
+        }
+
+        private void PacketReceived(GetParametherByteSuccessPacket packet)
+        {
+            TaskCompletionSource<byte> tcs;
+            if (_parametherFieldByteTasks.TryRemove(packet.ParametherField, out tcs))
+            {
+                tcs.SetResult(packet.Value);
+            }
+            else
+            {
+                Debug.WriteLine("Oscill: Got DeviceInfo response without request");
+            }
         }
 
         private void PacketReceived(DeviceInfoSuccessPacket packet)
@@ -178,7 +206,7 @@ namespace Oscil
             return true;
         }
 
-        private void EnqueuePacket(Packet packet)
+        private void EnqueuePacket(RequestPacket packet)
         {
             _sendBuffer.Post(packet);
         }
@@ -218,7 +246,7 @@ namespace Oscil
             }
         }
 
-        private Task WritePacketToDeviceAsync(Packet packet, CancellationToken token)
+        private Task WritePacketToDeviceAsync(RequestPacket packet, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
             var memoryStream = new MemoryStream();
@@ -272,7 +300,7 @@ namespace Oscil
         {
             if (_ms.Length == 0) return;
 
-            Packet packet;
+            ResponsePacket packet;
 
             try
             {
@@ -341,6 +369,30 @@ namespace Oscil
             EnqueuePacket(new StartPacket());
         }
 
+        public Task<byte> SetParametherAsync(ParametherField field, byte value)
+        {
+            var task = _parametherFieldByteTasks.GetOrAdd(field, f =>
+            {
+                var tcs = new TaskCompletionSource<byte>();
+                EnqueuePacket(new SetParametherBytePacket(field, value));
+                return tcs;
+            });
+
+            return task.Task;
+        }
+
+        public Task<int> SetParametherAsync(ParametherField field, int value)
+        {
+            var task = _parametherFieldTasks.GetOrAdd(field, f =>
+            {
+                var tcs = new TaskCompletionSource<int>();
+                EnqueuePacket(new SetParametherPacket(field, value));
+                return tcs;
+            });
+
+            return task.Task;
+        }
+
         public Task<string> GetDeviceInfoAsync(DeviceInfoField field)
         {
             var task = _deviceInfoTasks.GetOrAdd(field, f =>
@@ -371,41 +423,49 @@ namespace Oscil
 
     internal static class PacketFactory
     {
-        public static Packet GetPacket(EndianBinaryReader reader)
+        public static ResponsePacket GetPacket(EndianBinaryReader reader)
         {
-            var opcode = (Opcode) reader.ReadByte();
+            var opcode = (RespCode) reader.ReadByte();
             switch (opcode)
             {
-                case Opcode.Success:
-                    {
-                        return GetSuccessPacket(reader);
-                    }
-                case Opcode.AcceptSpeed:
-                    {
-                        return new AcceptSpeedPacket();
-                    }
-                case Opcode.Error:
-                    {
-                        return new ErrorPacket();
-                    }
+                case RespCode.Success:
+                {
+                    return GetSuccessPacket(reader);
+                }
+                case RespCode.AcceptSpeed:
+                {
+                    return new AcceptSpeedPacket();
+                }
+                case RespCode.Error:
+                {
+                    return new ErrorPacket();
+                }
             }
 
             throw new ArgumentException("Bad value", nameof(opcode));
         }
 
-        private static Packet GetSuccessPacket(EndianBinaryReader reader)
+        private static ResponsePacket GetSuccessPacket(EndianBinaryReader reader)
         {
             var length = reader.ReadUInt16();
-            var type = (SuccessType) reader.ReadUInt32();
+            var type = (CommandType) reader.ReadUInt32();
             switch (type)
             {
-                case SuccessType.Connect:
+                case CommandType.Connect:
                 {
                     return new ConnectSuccessPacket(length);
                 }
-                case SuccessType.DeviceInfo:
+                case CommandType.DeviceInfo:
                 {
                     return new DeviceInfoSuccessPacket(length);
+                }
+                case CommandType.GetParametherInt:
+                {
+                    return new GetParametherSuccessPacket(length);
+                }
+                case CommandType.GetParametherByte:
+                {
+                    return new GetParametherByteSuccessPacket(length);
                 }
                 default:
                 {
@@ -426,7 +486,11 @@ namespace Oscil
         DataPutF = 0x82,
         DataPutN = 0x02,
         Disconnect = 0x81,
-        ResendLastResp = 0x92,
+        ResendLastResp = 0x92
+    }
+
+    public enum RespCode : byte
+    {
         Abort = 0xff,
         AcceptSpeed = 0x0f,
         Continue = 0x90,
@@ -438,24 +502,54 @@ namespace Oscil
         Success = 0xa0
     }
 
-    public enum SuccessType : uint
+    public enum HeadId : byte
+    {
+        Name = 0x01,
+        Description = 0x05,
+        Type = 0x42,
+        Time = 0x44,
+        Body = 0x48,
+        EBody = 0x49,
+        Target = 0x46,
+        Property = 0x70,
+        Register = 0x71,
+        Command = 0x72,
+        PackSym = 0xB0,
+        OneByte = 0xB1,
+        Length = 0xC3,
+        TwoByte = 0xF0,
+        FourByte = 0xF1,
+    }
+
+    public enum CommandType : uint
     {
         Connect = 0x10000018,
-        DeviceInfo = 0x70000656
+        DeviceInfo = 0x70000656,
+        GetParametherInt =   0x71000554,
+        GetParametherByte =  0x71000552,
+        GetParametherByte2 = 0x71000541,
     }
 
     public enum DeviceInfoField : ushort
     {
-        Model = 0x4e4d,
-        Hard = 0x4857,
-        Soft = 0x5357,
-        Serial = 0x534E
+        Model = 0x4e4d, //VNM
+        Hard = 0x4857, //VHW
+        Soft = 0x5357, //VSW
+        Serial = 0x534E //VSN
     }
 
-    public class ErrorPacket : Packet
+    public enum ParametherField : ushort
+    {
+        DelayedSweep = 0x44F1,
+        AlignSweep = 0x43F0,
+        SampleMethod = 0x53B1,
+        MinNumPasStrob = 0x52B1,
+    }
+
+    public class ErrorPacket : ResponsePacket
     {
 
-        public ErrorPacket() : base(Opcode.Error)
+        public ErrorPacket() : base(RespCode.Error)
         {
         }
 
@@ -463,13 +557,9 @@ namespace Oscil
         {
             Length = reader.ReadUInt16();
         }
-
-        public override void Write(EndianBinaryWriter writer)
-        {
-        }
     }
 
-    public class StartPacket : Packet
+    public class StartPacket : RequestPacket
     {
         public byte[] Data { get; set; }
 
@@ -478,11 +568,6 @@ namespace Oscil
             Data = new byte[] { 0x72, 0, 0x04, 43 };
         }
 
-        public override void Read(EndianBinaryReader reader)
-        {
-            throw new NotImplementedException();
-        }
-
         public override void Write(EndianBinaryWriter writer)
         {
             writer.Write((byte)Opcode);
@@ -491,9 +576,8 @@ namespace Oscil
         }
     }
 
-    public class GetDeviceInfoPacket : Packet
+    public class GetDeviceInfoPacket : RequestPacket
     {
-        private const uint DeviceInfoHeader = 0x70000656;
         public DeviceInfoField Field { get; set; }
 
         public GetDeviceInfoPacket(DeviceInfoField field) : base(Opcode.DataGetF)
@@ -501,21 +585,58 @@ namespace Oscil
             Field = field;
         }
 
-        public override void Read(EndianBinaryReader reader)
+        public override void Write(EndianBinaryWriter writer)
         {
-            throw new NotImplementedException();
+            writer.Write((byte)Opcode);
+            writer.Write((ushort)9);
+            writer.Write((uint)CommandType.DeviceInfo);
+            writer.Write((ushort)Field);
+        }
+    }
+
+    public class SetParametherPacket : RequestPacket
+    {
+        public ParametherField Field { get; set; }
+        public int Value { get; set; }
+
+        public SetParametherPacket(ParametherField field, int value) : base(Opcode.DataGetF)
+        {
+            Field = field;
+            Value = value;
         }
 
         public override void Write(EndianBinaryWriter writer)
         {
             writer.Write((byte)Opcode);
-            writer.Write((ushort)9);
-            writer.Write(DeviceInfoHeader);
+            writer.Write((ushort)0x0D);
+            writer.Write((uint)CommandType.GetParametherInt);
             writer.Write((ushort)Field);
+            writer.Write(Value);
         }
     }
 
-    public class ConnectPacket : Packet
+    public class SetParametherBytePacket : RequestPacket
+    {
+        public ParametherField Field { get; set; }
+        public byte Value { get; set; }
+
+        public SetParametherBytePacket(ParametherField field, byte value) : base(Opcode.DataGetF)
+        {
+            Field = field;
+            Value = value;
+        }
+
+        public override void Write(EndianBinaryWriter writer)
+        {
+            writer.Write((byte)Opcode);
+            writer.Write((ushort)0x0D);
+            writer.Write((uint)CommandType.GetParametherInt);
+            writer.Write((ushort)Field);
+            writer.Write(Value);
+        }
+    }
+
+    public class ConnectPacket : RequestPacket
     {
         public byte[] Data { get; set; }
 
@@ -524,11 +645,6 @@ namespace Oscil
             Data = new byte[] { 0x10, 0, 0x10, 0 };
         }
 
-        public override void Read(EndianBinaryReader reader)
-        {
-            throw new NotImplementedException();
-        }
-
         public override void Write(EndianBinaryWriter writer)
         {
             writer.Write((byte)Opcode);
@@ -537,18 +653,13 @@ namespace Oscil
         }
     }
 
-    public class ChangeSpeedPacket : Packet
+    public class ChangeSpeedPacket : RequestPacket
     {
         public byte Divisor { get; set; }
 
         public ChangeSpeedPacket(byte divisor) : base(Opcode.ChangeSpeed)
         {
             Divisor = divisor;
-        }
-
-        public override void Read(EndianBinaryReader reader)
-        {
-            throw new NotImplementedException();
         }
 
         public override void Write(EndianBinaryWriter writer)
@@ -559,30 +670,20 @@ namespace Oscil
         }
     }
 
-    public class SuccessPacket : Packet
+    public abstract class SuccessPacket : ResponsePacket
     {
-        public SuccessType Type { get; set; }
+        public CommandType Type { get; set; }
         
-        public SuccessPacket(ushort length, SuccessType connect) : base(Opcode.Success)
+        public SuccessPacket(ushort length, CommandType connect) : base(RespCode.Success)
         {
             Length = length;
             Type = connect;
-        }
-
-        public override void Read(EndianBinaryReader reader)
-        {
-            throw new NotSupportedException();
-        }
-
-        public override void Write(EndianBinaryWriter writer)
-        {
-            throw new NotSupportedException();
         }
     }
 
     public class ConnectSuccessPacket : SuccessPacket
     {
-        public ConnectSuccessPacket(ushort length) : base(length, SuccessType.Connect)
+        public ConnectSuccessPacket(ushort length) : base(length, CommandType.Connect)
         {
             
         }
@@ -590,18 +691,13 @@ namespace Oscil
         public override void Read(EndianBinaryReader reader)
         {
         }
-
-        public override void Write(EndianBinaryWriter writer)
-        {
-            throw new NotSupportedException();
-        }
     }
 
     public class GenericSuccessPacket : SuccessPacket
     {
         public byte[] Data { get; set; }
 
-        public GenericSuccessPacket(ushort length, SuccessType connect) : base(length, connect)
+        public GenericSuccessPacket(ushort length, CommandType connect) : base(length, connect)
         {
         }
 
@@ -612,11 +708,6 @@ namespace Oscil
             reader.Read(data, 0, dataLen);
             Data = data;
         }
-
-        public override void Write(EndianBinaryWriter writer)
-        {
-            throw new NotSupportedException();
-        }
     }
 
     public class DeviceInfoSuccessPacket : SuccessPacket
@@ -624,7 +715,7 @@ namespace Oscil
         public DeviceInfoField DeviceInfoField { get; set; }
         public string Data { get; set; }
 
-        public DeviceInfoSuccessPacket(ushort length) : base(length, SuccessType.DeviceInfo)
+        public DeviceInfoSuccessPacket(ushort length) : base(length, CommandType.DeviceInfo)
         {
             
         }
@@ -637,41 +728,78 @@ namespace Oscil
             var data = reader.ReadBytes(dataLen);
             Data = Encoding.ASCII.GetString(data);
         }
+    }
 
-        public override void Write(EndianBinaryWriter writer)
+    public class GetParametherSuccessPacket : SuccessPacket
+    {
+        public ParametherField ParametherField { get; set; }
+        public int Value { get; set; }
+
+        public GetParametherSuccessPacket(ushort length) : base(length, CommandType.GetParametherInt)
         {
-            throw new NotSupportedException();
+            
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            ParametherField = (ParametherField) reader.ReadUInt16();
+            Value = reader.ReadInt32();
         }
     }
 
-    public class AcceptSpeedPacket : Packet
+    public class GetParametherByteSuccessPacket : SuccessPacket
+    {
+        public ParametherField ParametherField { get; set; }
+        public byte Value { get; set; }
+
+        public GetParametherByteSuccessPacket(ushort length) : base(length, CommandType.GetParametherByte)
+        {
+            
+        }
+
+        public override void Read(EndianBinaryReader reader)
+        {
+            ParametherField = (ParametherField) reader.ReadUInt16();
+            Value = reader.ReadByte();
+        }
+    }
+
+    public class AcceptSpeedPacket : ResponsePacket
     {
         public byte Divisor { get; set; }
 
-        public AcceptSpeedPacket() : base(Opcode.AcceptSpeed) { }
+        public AcceptSpeedPacket() : base(RespCode.AcceptSpeed) { }
+
         public override void Read(EndianBinaryReader reader)
         {
             Length = reader.ReadUInt16();
             Divisor = reader.ReadByte();
         }
-
-        public override void Write(EndianBinaryWriter writer)
-        {
-            throw new NotImplementedException();
-        }
     }
 
-    public abstract class Packet
+    public abstract class RequestPacket
     {
         public Opcode Opcode { get; }
         public ushort Length { get; protected set; }
 
-        public Packet(Opcode opcode)
+        public RequestPacket(Opcode opcode)
+        {
+            Opcode = opcode;
+        }
+        
+        public abstract void Write(EndianBinaryWriter writer);
+    }
+
+    public abstract class ResponsePacket
+    {
+        public RespCode Opcode { get; }
+        public ushort Length { get; protected set; }
+
+        public ResponsePacket(RespCode opcode)
         {
             Opcode = opcode;
         }
 
         public abstract void Read(EndianBinaryReader reader);
-        public abstract void Write(EndianBinaryWriter writer);
     }
 }
