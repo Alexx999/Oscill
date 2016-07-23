@@ -55,18 +55,18 @@ namespace Oscil
                 return;
             }
             await _device.SetSpeedAsync(921600).ConfigureAwait(false);
-            var model = await _device.GetDeviceInfoAsync(DeviceInfoField.Model).ConfigureAwait(false);
-            var hard = await _device.GetDeviceInfoAsync(DeviceInfoField.Hard).ConfigureAwait(false);
-            var soft = await _device.GetDeviceInfoAsync(DeviceInfoField.Soft).ConfigureAwait(false);
-            var serial = await _device.GetDeviceInfoAsync(DeviceInfoField.Serial).ConfigureAwait(false);
-            var ds = await _device.SetParametherAsync(ParametherField.DelayedSweep, 0).ConfigureAwait(false);
-            var asw = await _device.SetParametherAsync(ParametherField.AlignSweep, 38).ConfigureAwait(false);
-            var sample = await _device.SetParametherAsync(ParametherField.SampleMethod, (byte)0).ConfigureAwait(false);
+            var model = await _device.GetPropertyAsync("VNM").ConfigureAwait(false);
+            var hard = await _device.GetPropertyAsync("VHW").ConfigureAwait(false);
+            var soft = await _device.GetPropertyAsync("VSW").ConfigureAwait(false);
+            var serial = await _device.GetPropertyAsync("VSN").ConfigureAwait(false);
+            var ds = await _device.SetRegisterAsync("TD", 0, SizeId.FourByte).ConfigureAwait(false);
+            var asw = await _device.SetRegisterAsync("TC", 38, SizeId.TwoByte).ConfigureAwait(false);
+            var sample = await _device.SetRegisterAsync("RS", 0, SizeId.OneByte).ConfigureAwait(false);
         }
 
         private void button2_Click(object sender, RoutedEventArgs e)
         {
-            _device.SendConnect();
+            //_device.SendConnect();
         }
 
         protected override void OnClosing(CancelEventArgs e)
